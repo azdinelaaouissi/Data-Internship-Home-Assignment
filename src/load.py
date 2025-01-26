@@ -2,12 +2,22 @@ import os
 import json
 import sqlite3
 
-def load():
-    db_file = "sqlite_database.db"
-    input_dir = "staging/transformed"
-
-    conn = sqlite3.connect(db_file)
+def load_to_sqlite(input_dir, db_path):
+    """Charge les données transformées dans SQLite."""
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS job (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title VARCHAR(225),
+            industry VARCHAR(225),
+            description TEXT,
+            employment_type VARCHAR(125),
+            date_posted DATE
+        );
+    """)
 
     for file_name in os.listdir(input_dir):
         with open(f"{input_dir}/{file_name}", "r") as f:
@@ -23,12 +33,6 @@ def load():
             data['job']['employment_type'],
             data['job']['date_posted'],
         ))
-        job_id = cursor.lastrowid
-
-        cursor.execute("""
-            INSERT INTO company (job_id, name, link)
-            VALUES (?, ?, ?)
-        """, (job_id, data['company']['name'], data['company']['link']))
 
     conn.commit()
     conn.close()

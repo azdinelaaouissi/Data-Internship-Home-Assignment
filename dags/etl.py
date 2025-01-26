@@ -1,102 +1,60 @@
-from datetime import timedelta, datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+from src.extract import extract_jobs
+from src.transform import clean_and_transform
+from src.load import load_to_sqlite
 
-from airflow.decorators import dag, task
-from airflow.providers.sqlite.hooks.sqlite import SqliteHook
-from airflow.providers.sqlite.operators.sqlite import SqliteOperator
-
-TABLES_CREATION_QUERY = """CREATE TABLE IF NOT EXISTS job (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title VARCHAR(225),
-    industry VARCHAR(225),
-    description TEXT,
-    employment_type VARCHAR(125),
-    date_posted DATE
-);
-
-CREATE TABLE IF NOT EXISTS company (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER,
-    name VARCHAR(225),
-    link TEXT,
-    FOREIGN KEY (job_id) REFERENCES job(id)
-);
-
-CREATE TABLE IF NOT EXISTS education (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER,
-    required_credential VARCHAR(225),
-    FOREIGN KEY (job_id) REFERENCES job(id)
-);
-
-CREATE TABLE IF NOT EXISTS experience (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER,
-    months_of_experience INTEGER,
-    seniority_level VARCHAR(25),
-    FOREIGN KEY (job_id) REFERENCES job(id)
-);
-
-CREATE TABLE IF NOT EXISTS salary (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER,
-    currency VARCHAR(3),
-    min_value NUMERIC,
-    max_value NUMERIC,
-    unit VARCHAR(12),
-    FOREIGN KEY (job_id) REFERENCES job(id)
-);
-
-CREATE TABLE IF NOT EXISTS location (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER,
-    country VARCHAR(60),
-    locality VARCHAR(60),
-    region VARCHAR(60),
-    postal_code VARCHAR(25),
-    street_address VARCHAR(225),
-    latitude NUMERIC,
-    longitude NUMERIC,
-    FOREIGN KEY (job_id) REFERENCES job(id)
-)
-"""
-
-@task()
-def extract():
-    """Extract data from jobs.csv."""
-
-@task()
-def transform():
-    """Clean and convert extracted elements to json."""
-
-@task()
-def load():
-    """Load data to sqlite database."""
-    sqlite_hook = SqliteHook(sqlite_conn_id='sqlite_default')
-
-DAG_DEFAULT_ARGS = {
-    "depends_on_past": False,
-    "retries": 3,
-    "retry_delay": timedelta(minutes=15)
+# Définition des paramètres par défaut du DAG
+default_args = {
+    'owner': 'azdine',
+    'depends_on_past': False,
+    'email': ['laaouissi.azdine@gmail.com'],
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+    'start_date': datetime(2023, 1, 1),
 }
 
-@dag(
-    dag_id="etl_dag",
-    description="ETL LinkedIn job posts",
-    tags=["etl"],
-    schedule="@daily",
-    start_date=datetime(2024, 1, 2),
-    catchup=False,
-    default_args=DAG_DEFAULT_ARGS
-)
-def etl_dag():
-    """ETL pipeline"""
+# Création du DAG
+with DAG(
+    dag_id='etl_dag',
+    default_args=default_args,
+    description='Un ETL simple',
+    schedule_interval='@daily',
+    catchup=False,  # Désactive l'exécution rétroactive
+) as dag:
 
-    create_tables = SqliteOperator(
-        task_id="create_tables",
-        sqlite_conn_id="sqlite_default",
-        sql=TABLES_CREATION_QUERY
+    # Tâche d'extraction
+    extract_task = PythonOperator(
+        task_id='extract',
+        python_callable=extract_jobs,
+        op_kwargs={
+            'csv_path': 'source/jobs.csv',  # Chemin du fichier source
+            'output_dir': 'staging/extracted',  # Répertoire de sortie pour les fichiers extraits
+        },
     )
 
-    create_tables >> extract() >> transform() >> load()
+    # Tâche de transformation
+    transform_task = PythonOperator(
+        task_id='transform',
+        python_callable=clean_and_transform,
+        op_kwargs={
+            'input_dir': 'staging/extracted',  # Répertoire contenant les fichiers extraits
+            'output_dir': 'staging/transformed',  # Répertoire pour les fichiers transformés
+        },
+    )
 
-etl_dag()
+    # Tâche de chargement
+    load_task = PythonOperator(
+        task_id='load',
+        python_callable=load_to_sqlite,
+        op_kwargs={
+            'input_dir': 'staging/transformed',  # Répertoire contenant les fichiers transformés
+            'db_path': 'staging/jobs.db',  # Chemin de la base de données SQLite
+        },
+    )
+
+    # Définition des dépendances entre les tâches
+    extract_task >> transform_task >> load_task
